@@ -13,7 +13,7 @@ var fs = require("file-system"),
     scss = require("gulp-sass"),
     cssnano = require("gulp-cssnano"),
     typescript = require("gulp-typescript"),
-    uglify = require("gulp-uglify"),
+    terser = require("gulp-terser"),
     rename = require("gulp-rename"),
     concat = require("gulp-concat"),
     header = require("gulp-header"),
@@ -110,15 +110,15 @@ function resolveAssetGroupPaths(assetGroup, assetManifestPath) {
     assetGroup.manifestPath = assetManifestPath;
     assetGroup.basePath = path.dirname(assetManifestPath);
     assetGroup.inputPaths = assetGroup.inputs.map(function (inputPath) {
-        return path.resolve(path.join(assetGroup.basePath, inputPath));
+        return path.resolve(path.join(assetGroup.basePath, inputPath)).replace(/\\/g, '/');
     });
     assetGroup.watchPaths = [];
     if (!!assetGroup.watch) {
         assetGroup.watchPaths = assetGroup.watch.map(function (watchPath) {
-            return path.resolve(path.join(assetGroup.basePath, watchPath));
+            return path.resolve(path.join(assetGroup.basePath, watchPath)).replace(/\\/g, '/');
         });
     }
-    assetGroup.outputPath = path.resolve(path.join(assetGroup.basePath, assetGroup.output));
+    assetGroup.outputPath = path.resolve(path.join(assetGroup.basePath, assetGroup.output)).replace(/\\/g, '/');
     assetGroup.outputDir = path.dirname(assetGroup.outputPath);
     assetGroup.outputFileName = path.basename(assetGroup.output);
     // Uncomment to copy assets to wwwroot
@@ -269,7 +269,7 @@ function buildJsPipeline(assetGroup, doConcat, doRebuild) {
         .pipe(gulp.dest(assetGroup.outputDir))
         // Uncomment to copy assets to wwwroot
         //.pipe(gulp.dest(assetGroup.webroot))
-        .pipe(uglify())
+        .pipe(terser())
         .pipe(rename({
             suffix: ".min"
         }))
