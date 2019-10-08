@@ -13,7 +13,7 @@ namespace OrchardCore.Logging
     [LayoutRenderer(LayoutRendererName)]
     public class TenantLayoutRenderer : AspNetLayoutRendererBase
     {
-        public const string LayoutRendererName = "orchard-tenant-name";
+        public const string LayoutRendererName = "utc_date";
 
         protected override void DoAppend(StringBuilder builder, LogEventInfo logEvent)
         {
