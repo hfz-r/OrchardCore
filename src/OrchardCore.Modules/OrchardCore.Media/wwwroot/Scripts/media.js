@@ -3,6 +3,939 @@
 ** Any changes made directly to this file will be overwritten next time its asset group is processed by Gulp.
 */
 
+function ownKeys(object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; }
+
+function _objectSpread(target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i] != null ? arguments[i] : {}; if (i % 2) { ownKeys(Object(source), true).forEach(function (key) { _defineProperty(target, key, source[key]); }); } else if (Object.getOwnPropertyDescriptors) { Object.defineProperties(target, Object.getOwnPropertyDescriptors(source)); } else { ownKeys(Object(source)).forEach(function (key) { Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key)); }); } } return target; }
+
+function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+
+var initialized;
+var mediaApp;
+var _root = {
+  name: 'Media Library',
+  path: '',
+  folder: '',
+  isDirectory: true
+};
+var bus = new Vue();
+
+function initializeMediaApplication(displayMediaApplication, mediaApplicationUrl) {
+  if (initialized) {
+    return;
+  }
+
+  initialized = true;
+
+  if (!mediaApplicationUrl) {
+    console.error('mediaApplicationUrl variable is not defined');
+  }
+
+  $.ajax({
+    url: mediaApplicationUrl,
+    method: 'GET',
+    success: function success(content) {
+      $('.ta-content').append(content);
+      $(document).trigger('mediaapplication:ready');
+      mediaApp = new Vue({
+        el: '#mediaApp',
+        data: {
+          selectedFolder: _root,
+          mediaItems: [],
+          selectedMedias: [],
+          errors: [],
+          dragDropThumbnail: new Image(),
+          smallThumbs: false,
+          gridView: false,
+          mediaFilter: '',
+          sortBy: '',
+          sortAsc: true,
+          itemsInPage: []
+        },
+        created: function created() {
+          var self = this;
+          self.dragDropThumbnail.src = '/OrchardCore.Media/Images/drag-thumbnail.png';
+          bus.$on('folderSelected', function (folder) {
+            self.selectedFolder = folder;
+          });
+          bus.$on('folderDeleted', function () {
+            self.selectRoot();
+          });
+          bus.$on('folderAdded', function (folder) {
+            self.selectedFolder = folder;
+            folder.selected = true;
+          });
+          bus.$on('beforeFolderAdded', function (folder) {
+            self.loadFolder(folder);
+          });
+          bus.$on('mediaListMoved', function (errorInfo) {
+            self.loadFolder(self.selectedFolder);
+
+            if (errorInfo) {
+              self.errors.push(errorInfo);
+            }
+          });
+          bus.$on('mediaRenamed', function (newName, newPath, oldPath) {
+            var media = self.mediaItems.filter(function (item) {
+              return item.mediaPath === oldPath;
+            })[0];
+            media.mediaPath = newPath;
+            media.name = newName;
+          });
+          bus.$on('createFolderRequested', function (media) {
+            self.createFolder();
+          });
+          bus.$on('deleteFolderRequested', function (media) {
+            self.deleteFolder();
+          }); // common handlers for actions in both grid and table view.
+
+          bus.$on('sortChangeRequested', function (newSort) {
+            self.changeSort(newSort);
+          });
+          bus.$on('mediaToggleRequested', function (media) {
+            self.toggleSelectionOfMedia(media);
+          });
+          bus.$on('renameMediaRequested', function (media) {
+            self.renameMedia(media);
+          });
+          bus.$on('deleteMediaRequested', function (media) {
+            self.deleteMediaItem(media);
+          });
+          bus.$on('mediaDragStartRequested', function (media, e) {
+            self.handleDragStart(media, e);
+          }); // handler for pager events
+
+          bus.$on('pagerEvent', function (itemsInPage) {
+            self.itemsInPage = itemsInPage;
+            self.selectedMedias = [];
+          });
+          self.currentPrefs = JSON.parse(localStorage.getItem('mediaApplicationPrefs'));
+        },
+        computed: {
+          isHome: function isHome() {
+            return this.selectedFolder == _root;
+          },
+          parents: function parents() {
+            var p = [];
+            parentFolder = this.selectedFolder;
+
+            while (parentFolder && parentFolder.path != '') {
+              p.unshift(parentFolder);
+              parentFolder = parentFolder.parent;
+            }
+
+            return p;
+          },
+          root: function root() {
+            return _root;
+          },
+          filteredMediaItems: function filteredMediaItems() {
+            var self = this;
+            self.selectedMedias = [];
+            var filtered = self.mediaItems.filter(function (item) {
+              return item.name.toLowerCase().indexOf(self.mediaFilter.toLowerCase()) > -1;
+            });
+
+            switch (self.sortBy) {
+              case 'size':
+                filtered.sort(function (a, b) {
+                  return self.sortAsc ? a.size - b.size : b.size - a.size;
+                });
+                break;
+
+              case 'mime':
+                filtered.sort(function (a, b) {
+                  return self.sortAsc ? a.mime.toLowerCase().localeCompare(b.mime.toLowerCase()) : b.mime.toLowerCase().localeCompare(a.mime.toLowerCase());
+                });
+                break;
+
+              default:
+                filtered.sort(function (a, b) {
+                  return self.sortAsc ? a.name.toLowerCase().localeCompare(b.name.toLowerCase()) : b.name.toLowerCase().localeCompare(a.name.toLowerCase());
+                });
+            }
+
+            return filtered;
+          },
+          hiddenCount: function hiddenCount() {
+            var result = 0;
+            result = this.mediaItems.length - this.filteredMediaItems.length;
+            return result;
+          },
+          thumbSize: function thumbSize() {
+            return this.smallThumbs ? 160 : 240;
+          },
+          currentPrefs: {
+            get: function get() {
+              return {
+                smallThumbs: this.smallThumbs,
+                selectedFolder: this.selectedFolder,
+                gridView: this.gridView
+              };
+            },
+            set: function set(newPrefs) {
+              if (!newPrefs) {
+                return;
+              }
+
+              this.smallThumbs = newPrefs.smallThumbs;
+              this.selectedFolder = newPrefs.selectedFolder;
+              this.gridView = newPrefs.gridView;
+            }
+          }
+        },
+        watch: {
+          currentPrefs: function currentPrefs(newPrefs) {
+            localStorage.setItem('mediaApplicationPrefs', JSON.stringify(newPrefs));
+          },
+          selectedFolder: function selectedFolder(newFolder) {
+            this.mediaFilter = '';
+            this.selectedFolder = newFolder;
+            this.loadFolder(newFolder);
+          }
+        },
+        mounted: function mounted() {
+          this.$refs.rootFolder.toggle();
+        },
+        methods: {
+          uploadUrl: function uploadUrl() {
+            return this.selectedFolder ? $('#uploadFiles').val() + "?path=" + encodeURIComponent(this.selectedFolder.path) : null;
+          },
+          selectRoot: function selectRoot() {
+            this.selectedFolder = this.root;
+          },
+          loadFolder: function loadFolder(folder) {
+            this.errors = [];
+            this.selectedMedias = [];
+            var self = this;
+            $.ajax({
+              url: $('#getMediaItemsUrl').val() + "?path=" + encodeURIComponent(folder.path),
+              method: 'GET',
+              success: function success(data) {
+                data.forEach(function (item) {
+                  item.open = false;
+                });
+                self.mediaItems = data;
+                self.selectedMedias = [];
+                self.sortBy = '';
+                self.sortAsc = true;
+              },
+              error: function error(_error) {
+                console.log('error loading folder:' + folder.path);
+                self.selectRoot();
+              }
+            });
+          },
+          selectAll: function selectAll() {
+            this.selectedMedias = [];
+
+            for (var i = 0; i < this.filteredMediaItems.length; i++) {
+              this.selectedMedias.push(this.filteredMediaItems[i]);
+            }
+          },
+          unSelectAll: function unSelectAll() {
+            this.selectedMedias = [];
+          },
+          invertSelection: function invertSelection() {
+            var temp = [];
+
+            for (var i = 0; i < this.filteredMediaItems.length; i++) {
+              if (this.isMediaSelected(this.filteredMediaItems[i]) == false) {
+                temp.push(this.filteredMediaItems[i]);
+              }
+            }
+
+            this.selectedMedias = temp;
+          },
+          toggleSelectionOfMedia: function toggleSelectionOfMedia(media) {
+            if (this.isMediaSelected(media) == true) {
+              this.selectedMedias.splice(this.selectedMedias.indexOf(media), 1);
+            } else {
+              this.selectedMedias.push(media);
+            }
+          },
+          isMediaSelected: function isMediaSelected(media) {
+            var result = this.selectedMedias.some(function (element, index, array) {
+              return element.url.toLowerCase() === media.url.toLowerCase();
+            });
+            return result;
+          },
+          deleteFolder: function deleteFolder() {
+            var folder = this.selectedFolder;
+            var self = this; // The root folder can't be deleted
+
+            if (folder == this.root.model) {
+              return;
+            }
+
+            confirmDialog(_objectSpread(_objectSpread({}, $("#deleteFolder").data()), {}, {
+              callback: function callback(resp) {
+                if (resp) {
+                  $.ajax({
+                    url: $('#deleteFolderUrl').val() + "?path=" + encodeURIComponent(folder.path),
+                    method: 'POST',
+                    data: {
+                      __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
+                    },
+                    success: function success(data) {
+                      bus.$emit('deleteFolder', folder);
+                    },
+                    error: function error(_error2) {
+                      console.error(_error2.responseText);
+                    }
+                  });
+                }
+              }
+            }));
+          },
+          createFolder: function createFolder() {
+            $('#createFolderModal-errors').empty();
+            $('#createFolderModal').modal('show');
+            $('#createFolderModal .modal-body input').val('').focus();
+          },
+          renameMedia: function renameMedia(media) {
+            $('#renameMediaModal-errors').empty();
+            $('#renameMediaModal').modal('show');
+            $('#old-item-name').val(media.name);
+            $('#renameMediaModal .modal-body input').val(media.name).focus();
+          },
+          selectAndDeleteMedia: function selectAndDeleteMedia(media) {
+            this.deleteMedia();
+          },
+          deleteMediaList: function deleteMediaList() {
+            var mediaList = this.selectedMedias;
+            var self = this;
+
+            if (mediaList.length < 1) {
+              return;
+            }
+
+            confirmDialog(_objectSpread(_objectSpread({}, $("#deleteMedia").data()), {}, {
+              callback: function callback(resp) {
+                if (resp) {
+                  var paths = [];
+
+                  for (var i = 0; i < mediaList.length; i++) {
+                    paths.push(mediaList[i].mediaPath);
+                  }
+
+                  $.ajax({
+                    url: $('#deleteMediaListUrl').val(),
+                    method: 'POST',
+                    data: {
+                      __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val(),
+                      paths: paths
+                    },
+                    success: function success(data) {
+                      for (var i = 0; i < self.selectedMedias.length; i++) {
+                        var index = self.mediaItems && self.mediaItems.indexOf(self.selectedMedias[i]);
+
+                        if (index > -1) {
+                          self.mediaItems.splice(index, 1);
+                          bus.$emit('mediaDeleted', self.selectedMedias[i]);
+                        }
+                      }
+
+                      self.selectedMedias = [];
+                    },
+                    error: function error(_error3) {
+                      console.error(_error3.responseText);
+                    }
+                  });
+                }
+              }
+            }));
+          },
+          deleteMediaItem: function deleteMediaItem(media) {
+            var self = this;
+
+            if (!media) {
+              return;
+            }
+
+            confirmDialog(_objectSpread(_objectSpread({}, $("#deleteMedia").data()), {}, {
+              callback: function callback(resp) {
+                if (resp) {
+                  $.ajax({
+                    url: $('#deleteMediaUrl').val() + "?path=" + encodeURIComponent(media.mediaPath),
+                    method: 'POST',
+                    data: {
+                      __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
+                    },
+                    success: function success(data) {
+                      var index = self.mediaItems && self.mediaItems.indexOf(media);
+
+                      if (index > -1) {
+                        self.mediaItems.splice(index, 1);
+                        bus.$emit('mediaDeleted', media);
+                      } //self.selectedMedia = null;
+
+                    },
+                    error: function error(_error4) {
+                      console.error(_error4.responseText);
+                    }
+                  });
+                }
+              }
+            }));
+          },
+          handleDragStart: function handleDragStart(media, e) {
+            // first part of move media to folder:
+            // prepare the data that will be handled by the folder component on drop event
+            var mediaNames = [];
+            this.selectedMedias.forEach(function (item) {
+              mediaNames.push(item.name);
+            }); // in case the user drags an unselected item, we select it first
+
+            if (this.isMediaSelected(media) == false) {
+              mediaNames.push(media.name);
+              this.selectedMedias.push(media);
+            }
+
+            e.dataTransfer.setData('mediaNames', JSON.stringify(mediaNames));
+            e.dataTransfer.setData('sourceFolder', this.selectedFolder.path);
+            e.dataTransfer.setDragImage(this.dragDropThumbnail, 10, 10);
+            e.dataTransfer.effectAllowed = 'move';
+          },
+          handleScrollWhileDrag: function handleScrollWhileDrag(e) {
+            if (e.clientY < 150) {
+              window.scrollBy(0, -10);
+            }
+
+            if (e.clientY > window.innerHeight - 100) {
+              window.scrollBy(0, 10);
+            }
+          },
+          changeSort: function changeSort(newSort) {
+            if (this.sortBy == newSort) {
+              this.sortAsc = !this.sortAsc;
+            } else {
+              this.sortAsc = true;
+              this.sortBy = newSort;
+            }
+          }
+        }
+      });
+      $('#create-folder-name').keypress(function (e) {
+        var key = e.which;
+
+        if (key == 13) {
+          // the enter key code
+          $('#modalFooterOk').click();
+          return false;
+        }
+      });
+      $('#modalFooterOk').on('click', function (e) {
+        var name = $('#create-folder-name').val();
+
+        if (name === "") {
+          return;
+        }
+
+        $.ajax({
+          url: $('#createFolderUrl').val() + "?path=" + encodeURIComponent(mediaApp.selectedFolder.path) + "&name=" + encodeURIComponent(name),
+          method: 'POST',
+          data: {
+            __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
+          },
+          success: function success(data) {
+            bus.$emit('addFolder', mediaApp.selectedFolder, data);
+            $('#createFolderModal').modal('hide');
+          },
+          error: function error(_error5) {
+            $('#createFolderModal-errors').empty();
+            var errorMessage = JSON.parse(_error5.responseText).value;
+            $('<div class="alert alert-danger" role="alert"></div>').text(errorMessage).appendTo($('#createFolderModal-errors'));
+          }
+        });
+      });
+      $('#renameMediaModalFooterOk').on('click', function (e) {
+        var newName = $('#new-item-name').val();
+        var oldName = $('#old-item-name').val();
+
+        if (newName === "") {
+          return;
+        }
+
+        var currentFolder = mediaApp.selectedFolder.path + "/";
+
+        if (currentFolder === "/") {
+          currentFolder = "";
+        }
+
+        var newPath = currentFolder + newName;
+        var oldPath = currentFolder + oldName;
+
+        if (newPath.toLowerCase() === oldPath.toLowerCase()) {
+          $('#renameMediaModal').modal('hide');
+          return;
+        }
+
+        $.ajax({
+          url: $('#renameMediaUrl').val() + "?oldPath=" + encodeURIComponent(oldPath) + "&newPath=" + encodeURIComponent(newPath),
+          method: 'POST',
+          data: {
+            __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
+          },
+          success: function success(data) {
+            $('#renameMediaModal').modal('hide');
+            bus.$emit('mediaRenamed', newName, newPath, oldPath);
+          },
+          error: function error(_error6) {
+            $('#renameMediaModal-errors').empty();
+            var errorMessage = JSON.parse(_error6.responseText).value;
+            $('<div class="alert alert-danger" role="alert"></div>').text(errorMessage).appendTo($('#renameMediaModal-errors'));
+          }
+        });
+      });
+
+      if (displayMediaApplication) {
+        document.getElementById('mediaApp').style.display = "";
+      }
+
+      $(document).trigger('mediaApp:ready');
+    },
+    error: function error(_error7) {
+      console.error(_error7.responseText);
+    }
+  });
+}
+$(document).on('mediaApp:ready', function () {
+  $('#fileupload').fileupload({
+    dropZone: $('#mediaApp'),
+    limitConcurrentUploads: 20,
+    dataType: 'json',
+    url: $('#uploadFiles').val(),
+    formData: function formData() {
+      var antiForgeryToken = $("input[name=__RequestVerificationToken]").val();
+      return [{
+        name: 'path',
+        value: mediaApp.selectedFolder.path
+      }, {
+        name: '__RequestVerificationToken',
+        value: antiForgeryToken
+      }];
+    },
+    done: function done(e, data) {
+      $.each(data.result.files, function (index, file) {
+        if (!file.error) {
+          mediaApp.mediaItems.push(file);
+        }
+      });
+    }
+  });
+});
+$(document).bind('dragover', function (e) {
+  var dt = e.originalEvent.dataTransfer;
+
+  if (dt.types && (dt.types.indexOf ? dt.types.indexOf('Files') != -1 : dt.types.contains('Files'))) {
+    var dropZone = $('#customdropzone'),
+        timeout = window.dropZoneTimeout;
+
+    if (timeout) {
+      clearTimeout(timeout);
+    } else {
+      dropZone.addClass('in');
+    }
+
+    var hoveredDropZone = $(e.target).closest(dropZone);
+    window.dropZoneTimeout = setTimeout(function () {
+      window.dropZoneTimeout = null;
+      dropZone.removeClass('in');
+    }, 100);
+  }
+});
+function ownKeys(object, enumerableOnly) { var keys = Object.keys(object); if (Object.getOwnPropertySymbols) { var symbols = Object.getOwnPropertySymbols(object); if (enumerableOnly) symbols = symbols.filter(function (sym) { return Object.getOwnPropertyDescriptor(object, sym).enumerable; }); keys.push.apply(keys, symbols); } return keys; }
+
+function _objectSpread(target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i] != null ? arguments[i] : {}; if (i % 2) { ownKeys(Object(source), true).forEach(function (key) { _defineProperty(target, key, source[key]); }); } else if (Object.getOwnPropertyDescriptors) { Object.defineProperties(target, Object.getOwnPropertyDescriptors(source)); } else { ownKeys(Object(source)).forEach(function (key) { Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key)); }); } } return target; }
+
+function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+
+// <folder> component
+Vue.component('folder', {
+  template: "\n        <li :class=\"{selected: isSelected}\" \n                v-on:dragleave.prevent = \"handleDragLeave($event);\" \n                v-on:dragover.prevent.stop=\"handleDragOver($event);\" \n                v-on:drop.prevent.stop = \"moveMediaToFolder(model, $event)\" >\n            <div :class=\"{folderhovered: isHovered , treeroot: level == 1}\" >\n                <a href=\"javascript:;\" :style=\"{ padding".concat(document.dir == "ltr" ? "Left" : "Right", ":padding + 'px' }\" v-on:click=\"select\"  draggable=\"false\" class=\"folder-menu-item\">\n                  <span v-on:click.stop=\"toggle\" class=\"expand\" :class=\"{opened: open, closed: !open, empty: empty}\"><i class=\"fas fa-chevron-right\"></i></span> \n                  <div class=\"folder-name\">{{model.name}}</div>\n                    <div class=\"btn-group folder-actions\" >\n                            <a v-cloak href=\"javascript:;\" class=\"btn btn-sm\" v-on:click=\"createFolder\" v-show=\"isSelected || isRoot\"> <i class=\"fa fa-plus\"></i></a>\n                            <a v-cloak href=\"javascript:;\" class=\"btn btn-sm\" v-on:click=\"deleteFolder\" v-show=\"isSelected && !isRoot\"><i class=\"fa fa-trash\"></i></a>\n                    </div>\n                </a>\n            </div>\n            <ol v-show=\"open\">\n                <folder v-for=\"folder in children\"\n                        :key=\"folder.path\"\n                        :model=\"folder\"\n                        :selected-in-media-app=\"selectedInMediaApp\"\n                        :level=\"level + 1\">\n                </folder>\n            </ol>\n        </li>\n        "),
+  props: {
+    model: Object,
+    selectedInMediaApp: Object,
+    level: Number
+  },
+  data: function data() {
+    return {
+      open: false,
+      children: null,
+      // not initialized state (for lazy-loading)
+      parent: null,
+      isHovered: false,
+      padding: 0
+    };
+  },
+  computed: {
+    empty: function empty() {
+      return !this.children || this.children.length == 0;
+    },
+    isSelected: function isSelected() {
+      return this.selectedInMediaApp.name == this.model.name && this.selectedInMediaApp.path == this.model.path;
+    },
+    isRoot: function isRoot() {
+      return this.model.path === '';
+    }
+  },
+  mounted: function mounted() {
+    if (this.isRoot == false && this.isAncestorOfSelectedFolder()) {
+      this.toggle();
+    }
+
+    this.padding = this.level < 3 ? 26 : 26 + this.level * 8;
+  },
+  created: function created() {
+    var self = this;
+    bus.$on('deleteFolder', function (folder) {
+      if (self.children) {
+        var index = self.children && self.children.indexOf(folder);
+
+        if (index > -1) {
+          self.children.splice(index, 1);
+          bus.$emit('folderDeleted');
+        }
+      }
+    });
+    bus.$on('addFolder', function (target, folder) {
+      if (self.model == target) {
+        bus.$emit('beforeFolderAdded', self.model);
+
+        if (self.children !== null) {
+          self.children.push(folder);
+        }
+
+        folder.parent = self.model;
+        bus.$emit('folderAdded', folder);
+      }
+    });
+  },
+  methods: {
+    isAncestorOfSelectedFolder: function isAncestorOfSelectedFolder() {
+      parentFolder = mediaApp.selectedFolder;
+
+      while (parentFolder) {
+        if (parentFolder.path == this.model.path) {
+          return true;
+        }
+
+        parentFolder = parentFolder.parent;
+      }
+
+      return false;
+    },
+    toggle: function toggle() {
+      this.open = !this.open;
+
+      if (this.open && !this.children) {
+        this.loadChildren();
+      }
+    },
+    select: function select() {
+      bus.$emit('folderSelected', this.model);
+      this.loadChildren();
+    },
+    createFolder: function createFolder() {
+      bus.$emit('createFolderRequested');
+    },
+    deleteFolder: function deleteFolder() {
+      bus.$emit('deleteFolderRequested');
+    },
+    loadChildren: function loadChildren() {
+      var self = this;
+
+      if (this.open == false) {
+        this.open = true;
+      }
+
+      $.ajax({
+        url: $('#getFoldersUrl').val() + "?path=" + encodeURIComponent(self.model.path),
+        method: 'GET',
+        success: function success(data) {
+          self.children = data;
+          self.children.forEach(function (c) {
+            c.parent = self.model;
+          });
+        },
+        error: function error(_error) {
+          emtpy = false;
+          console.error(_error.responseText);
+        }
+      });
+    },
+    handleDragOver: function handleDragOver(e) {
+      this.isHovered = true;
+    },
+    handleDragLeave: function handleDragLeave(e) {
+      this.isHovered = false;
+    },
+    moveMediaToFolder: function moveMediaToFolder(folder, e) {
+      var self = this;
+      self.isHovered = false;
+      var mediaNames = JSON.parse(e.dataTransfer.getData('mediaNames'));
+
+      if (mediaNames.length < 1) {
+        return;
+      }
+
+      var sourceFolder = e.dataTransfer.getData('sourceFolder');
+      var targetFolder = folder.path;
+
+      if (sourceFolder === '') {
+        sourceFolder = 'root';
+      }
+
+      if (targetFolder === '') {
+        targetFolder = 'root';
+      }
+
+      if (sourceFolder === targetFolder) {
+        alert($('#sameFolderMessage').val());
+        return;
+      }
+
+      confirmDialog(_objectSpread(_objectSpread({}, $("#moveMedia").data()), {}, {
+        callback: function callback(resp) {
+          if (resp) {
+            $.ajax({
+              url: $('#moveMediaListUrl').val(),
+              method: 'POST',
+              data: {
+                __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val(),
+                mediaNames: mediaNames,
+                sourceFolder: sourceFolder,
+                targetFolder: targetFolder
+              },
+              success: function success() {
+                bus.$emit('mediaListMoved'); // MediaApp will listen to this, and then it will reload page so the moved medias won't be there anymore
+              },
+              error: function error(_error2) {
+                console.error(_error2.responseText);
+                bus.$emit('mediaListMoved', _error2.responseText);
+              }
+            });
+          }
+        }
+      }));
+    }
+  }
+});
+// <media-items-grid> component
+Vue.component('media-items-grid', {
+  template: "\n        <ol class=\"row media-items-grid\">\n                <li v-for=\"media in filteredMediaItems\"\n                    :key=\"media.name\" \n                    class=\"media-item media-container-main-list-item card\"\n                    :style=\"{width: thumbSize + 2 + 'px'}\"\n                    :class=\"{selected: isMediaSelected(media)}\"\n                    v-on:click.stop=\"toggleSelectionOfMedia(media)\"\n                    draggable=\"true\" v-on:dragstart=\"dragStart(media, $event)\">\n                    <div class=\"thumb-container\" :style=\"{height: thumbSize +'px'}\">\n                        <img v-if=\"media.mime.startsWith('image')\"\n                                :src=\"buildMediaUrl(media.url, thumbSize)\"\n                                :data-mime=\"media.mime\"\n                                :style=\"{maxHeight: thumbSize +'px', maxWidth: thumbSize +'px'}\" />\n                        <i v-else class=\"fa fa-file-o fa-lg\" :data-mime=\"media.mime\"></i>\n                    </div>\n                <div class=\"media-container-main-item-title card-body\">\n                        <a href=\"javascript:;\" class=\"btn btn-light btn-sm float-right inline-media-button edit-button\" v-on:click.stop=\"renameMedia(media)\"><i class=\"fa fa-edit\"></i></a>\n                        <a href=\"javascript:;\" class=\"btn btn-light btn-sm float-right inline-media-button delete-button\" v-on:click.stop=\"deleteMedia(media)\"><i class=\"fa fa-trash\"></i></a>\n                        <a :href=\"media.url\" class=\"btn btn-light btn-sm float-right inline-media-button view-button\"\"><i class=\"fa fa-download\"></i></a>\n                        <span class=\"media-filename card-text small\" :title=\"media.name\">{{ media.name }}</span>\n                    </div>\n                 </li>\n        </ol>\n        ",
+  data: function data() {
+    return {
+      T: {}
+    };
+  },
+  props: {
+    filteredMediaItems: Array,
+    selectedMedias: Array,
+    thumbSize: Number
+  },
+  created: function created() {
+    var self = this; // retrieving localized strings from view
+
+    self.T.editButton = $('#t-edit-button').val();
+    self.T.deleteButton = $('#t-delete-button').val();
+  },
+  methods: {
+    isMediaSelected: function isMediaSelected(media) {
+      var result = this.selectedMedias.some(function (element, index, array) {
+        return element.url.toLowerCase() === media.url.toLowerCase();
+      });
+      return result;
+    },
+    buildMediaUrl: function buildMediaUrl(url, thumbSize) {
+      return url + (url.indexOf('?') == -1 ? '?' : '&') + 'width=' + thumbSize + '&height=' + thumbSize;
+    },
+    toggleSelectionOfMedia: function toggleSelectionOfMedia(media) {
+      bus.$emit('mediaToggleRequested', media);
+    },
+    renameMedia: function renameMedia(media) {
+      bus.$emit('renameMediaRequested', media);
+    },
+    deleteMedia: function deleteMedia(media) {
+      bus.$emit('deleteMediaRequested', media);
+    },
+    dragStart: function dragStart(media, e) {
+      bus.$emit('mediaDragStartRequested', media, e);
+    }
+  }
+});
+// <media-items-table> component
+Vue.component('media-items-table', {
+  template: "\n        <table class=\"table media-items-table\">\n            <thead>\n                <tr class=\"header-row\">\n                    <th scope=\"col\" class=\"thumbnail-column\">{{ T.imageHeader }}</th>\n                    <th scope=\"col\" v-on:click=\"changeSort('name')\">\n                       {{ T.nameHeader }}\n                         <sort-indicator colname=\"name\" :selectedcolname=\"sortBy\" :asc=\"sortAsc\"></sort-indicator>\n                    </th>\n                    <th scope=\"col\" v-on:click=\"changeSort('size')\">\n                        <span class=\"optional-col\">\n                            {{ T.sizeHeader }}\n                         <sort-indicator colname=\"size\" :selectedcolname=\"sortBy\" :asc=\"sortAsc\"></sort-indicator>\n                        </span>\n                    </th>\n                    <th scope=\"col\" v-on:click=\"changeSort('mime')\">\n                        <span class=\"optional-col\">\n                           {{ T.typeHeader }}\n                         <sort-indicator colname=\"mime\" :selectedcolname=\"sortBy\" :asc=\"sortAsc\"></sort-indicator>\n                        </span>\n                    </th>\n                </tr>\n            </thead>\n            <tbody>\n                    <tr v-for=\"media in filteredMediaItems\"\n                          class=\"media-item\"\n                          :class=\"{selected: isMediaSelected(media)}\"\n                          v-on:click.stop=\"toggleSelectionOfMedia(media)\"\n                          draggable=\"true\" v-on:dragstart=\"dragStart(media, $event)\"\n                          :key=\"media.name\">\n                             <td class=\"thumbnail-column\">\n                                <div class=\"img-wrapper\">\n                                    <img v-if=\"media.mime.startsWith('image')\" draggable=\"false\" :src=\"buildMediaUrl(media.url, thumbSize)\" />\n                                    <i v-else class=\"fa fa-file-o fa-lg\" :data-mime=\"media.mime\"></i>\n                                </div>\n                            </td>\n                            <td>\n                                <div class=\"media-name-cell\">\n                                   <span class=\"break-word\"> {{ media.name }} </span>\n                                    <div class=\"buttons-container\">\n                                        <a href=\"javascript:;\" class=\"btn btn-link btn-sm mr-1 edit-button\" v-on:click.stop=\"renameMedia(media)\"> {{ T.editButton }} </a >\n                                        <a href=\"javascript:;\" class=\"btn btn-link btn-sm delete-button\" v-on:click.stop=\"deleteMedia(media)\"> {{ T.deleteButton }} </a>\n                                        <a :href=\"media.url\" class=\"btn btn-link btn-sm view-button\"> {{ T.viewButton }} </a>\n                                    </div>\n                                </div>\n                            </td>\n                            <td>\n                                <div class=\"text-col optional-col\"> {{ isNaN(media.size)? 0 : Math.round(media.size / 1024) }} KB</div>\n                            </td>\n                            <td>\n                                <div class=\"text-col optional-col\">{{ media.mime }}</div>\n                            </td>\n                   </tr>\n            </tbody>\n        </table>\n        ",
+  data: function data() {
+    return {
+      T: {}
+    };
+  },
+  props: {
+    sortBy: String,
+    sortAsc: Boolean,
+    filteredMediaItems: Array,
+    selectedMedias: Array,
+    thumbSize: Number
+  },
+  created: function created() {
+    var self = this;
+    self.T.imageHeader = $('#t-image-header').val();
+    self.T.nameHeader = $('#t-name-header').val();
+    self.T.sizeHeader = $('#t-size-header').val();
+    self.T.typeHeader = $('#t-type-header').val();
+    self.T.editButton = $('#t-edit-button').val();
+    self.T.deleteButton = $('#t-delete-button').val();
+    self.T.viewButton = $('#t-view-button').val();
+  },
+  methods: {
+    isMediaSelected: function isMediaSelected(media) {
+      var result = this.selectedMedias.some(function (element, index, array) {
+        return element.url.toLowerCase() === media.url.toLowerCase();
+      });
+      return result;
+    },
+    buildMediaUrl: function buildMediaUrl(url, thumbSize) {
+      return url + (url.indexOf('?') == -1 ? '?' : '&') + 'width=' + thumbSize + '&height=' + thumbSize;
+    },
+    changeSort: function changeSort(newSort) {
+      bus.$emit('sortChangeRequested', newSort);
+    },
+    toggleSelectionOfMedia: function toggleSelectionOfMedia(media) {
+      bus.$emit('mediaToggleRequested', media);
+    },
+    renameMedia: function renameMedia(media) {
+      bus.$emit('renameMediaRequested', media);
+    },
+    deleteMedia: function deleteMedia(media) {
+      bus.$emit('deleteMediaRequested', media);
+    },
+    dragStart: function dragStart(media, e) {
+      bus.$emit('mediaDragStartRequested', media, e);
+    }
+  }
+});
+// This component receives a list of all the items, unpaged.
+// As the user interacts with the pager, it raises events with the items in the current page.
+// It's the parent's responsibility to listen for these events and display the received items
+// <pager> component
+Vue.component('pager', {
+  template: "\n        <nav id=\"media-pager\" aria-label=\"Pagination Navigation\" role=\"navigation\" :data-computed-trigger=\"itemsInCurrentPage.length\">\n            <ul class= \"pagination  pagination-sm\">\n                <li class=\"page-item media-first-button\" :class=\"{disabled : !canDoFirst}\">\n                    <a class=\"page-link\" href=\"#\" :tabindex=\"canDoFirst ? 0 : -1\" v-on:click=\"goFirst\">{{ T.pagerFirstButton }}</a>\n                </li>\n                <li class=\"page-item\" :class=\"{disabled : !canDoPrev}\">\n                    <a class=\"page-link\" href=\"#\" :tabindex=\"canDoPrev ? 0 : -1\" v-on:click=\"previous\">{{ T.pagerPreviousButton }}</a>\n                </li>\n                <li  v-if=\"link !== -1\" class=\"page-item page-number\"  :class=\"{active : current == link - 1}\" v-for=\"link in pageLinks\">\n                    <a class=\"page-link\" href=\"#\" v-on:click=\"goTo(link - 1)\" :aria-label=\"'Goto Page' + link\">\n                        {{link}}\n                        <span v-if=\"current == link -1\" class=\"sr-only\">(current)</span>\n                    </a>\n                </li>\n                <li class=\"page-item\" :class=\"{disabled : !canDoNext}\">\n                    <a class=\"page-link\" href=\"#\" :tabindex=\"canDoNext ? 0 : -1\" v-on:click=\"next\">{{ T.pagerNextButton }}</a>\n                </li>\n                <li class=\"page-item media-last-button\" :class=\"{disabled : !canDoLast}\">\n                    <a class=\"page-link\" href=\"#\" :tabindex=\"canDoLast ? 0 : -1\" v-on:click=\"goLast\">{{ T.pagerLastButton }}</a>\n                </li>\n                <li class=\"page-item ml-4 page-size-info\">\n                    <div style=\"display: flex;\">\n                        <span class=\"page-link disabled text-muted page-size-label\">{{ T.pagerPageSizeLabel }}</span>\n                        <select id=\"pageSizeSelect\" class=\"page-link\" v-model=\"pageSize\">\n                            <option v-for=\"option in pageSizeOptions\" v-bind:value=\"option\">\n                                {{option}}\n                            </option>\n                        </select>\n                    </div>\n                </li>\n                <li class=\"page-item ml-4 page-info\">\n                    <span class=\"page-link disabled text-muted \">{{ T.pagerPageLabel }} {{current + 1}}/{{totalPages}}</span>\n                </li>\n                <li class=\"page-item ml-4 total-info\">\n                     <span class=\"page-link disabled text-muted \"> {{ T.pagerTotalLabel }} {{total}}</span>\n                </li>\n            </ul>\n        </nav>\n        ",
+  props: {
+    sourceItems: Array
+  },
+  data: function data() {
+    return {
+      pageSize: 5,
+      pageSizeOptions: [5, 10, 30, 50, 100],
+      current: 0,
+      T: {}
+    };
+  },
+  created: function created() {
+    var self = this; // retrieving localized strings from view
+
+    self.T.pagerFirstButton = $('#t-pager-first-button').val();
+    self.T.pagerPreviousButton = $('#t-pager-previous-button').val();
+    self.T.pagerNextButton = $('#t-pager-next-button').val();
+    self.T.pagerLastButton = $('#t-pager-last-button').val();
+    self.T.pagerPageSizeLabel = $('#t-pager-page-size-label').val();
+    self.T.pagerPageLabel = $('#t-pager-page-label').val();
+    self.T.pagerTotalLabel = $('#t-pager-total-label').val();
+  },
+  methods: {
+    next: function next() {
+      this.current = this.current + 1;
+    },
+    previous: function previous() {
+      this.current = this.current - 1;
+    },
+    goFirst: function goFirst() {
+      this.current = 0;
+    },
+    goLast: function goLast() {
+      this.current = this.totalPages - 1;
+    },
+    goTo: function goTo(targetPage) {
+      this.current = targetPage;
+    }
+  },
+  computed: {
+    total: function total() {
+      return this.sourceItems ? this.sourceItems.length : 0;
+    },
+    totalPages: function totalPages() {
+      var pages = Math.ceil(this.total / this.pageSize);
+      return pages > 0 ? pages : 1;
+    },
+    isLastPage: function isLastPage() {
+      return this.current + 1 >= this.totalPages;
+    },
+    isFirstPage: function isFirstPage() {
+      return this.current === 0;
+    },
+    canDoNext: function canDoNext() {
+      return !this.isLastPage;
+    },
+    canDoPrev: function canDoPrev() {
+      return !this.isFirstPage;
+    },
+    canDoFirst: function canDoFirst() {
+      return !this.isFirstPage;
+    },
+    canDoLast: function canDoLast() {
+      return !this.isLastPage;
+    },
+    // this computed is only to have a central place where we detect changes and leverage Vue JS reactivity to raise our event.
+    // That event will be handled by the parent media app to display the items in the page.
+    // this logic will not run if the computed property is not used in the template. We use a dummy "data-computed-trigger" attribute for that.
+    itemsInCurrentPage: function itemsInCurrentPage() {
+      var start = this.pageSize * this.current;
+      var end = start + this.pageSize;
+      var result = this.sourceItems.slice(start, end);
+      bus.$emit('pagerEvent', result);
+      return result;
+    },
+    pageLinks: function pageLinks() {
+      var links = [];
+      links.push(this.current + 1); // Add 2 items before current
+
+      var beforeCurrent = this.current > 0 ? this.current : -1;
+      links.unshift(beforeCurrent);
+      var beforeBeforeCurrent = this.current > 1 ? this.current - 1 : -1;
+      links.unshift(beforeBeforeCurrent); // Add 2 items after current
+
+      var afterCurrent = this.totalPages - this.current > 1 ? this.current + 2 : -1;
+      links.push(afterCurrent);
+      var afterAfterCurrent = this.totalPages - this.current > 2 ? this.current + 3 : -1;
+      links.push(afterAfterCurrent);
+      return links;
+    }
+  },
+  watch: {
+    sourceItems: function sourceItems() {
+      this.current = 0; // resetting current page after receiving a new list of unpaged items
+    },
+    pageSize: function pageSize() {
+      this.current = 0;
+    }
+  }
+});
+// <sort-indicator> component
+Vue.component('sortIndicator', {
+  template: "\n        <div v-show=\"isActive\" class=\"sort-indicator\">\n            <span v-show=\"asc\"><i class=\"small fa fa-chevron-up\"></i></span>\n            <span v-show=\"!asc\"><i class=\"small fa fa-chevron-down\"></i></span>\n        </div>\n        ",
+  props: {
+    colname: String,
+    selectedcolname: String,
+    asc: Boolean
+  },
+  computed: {
+    isActive: function isActive() {
+      return this.colname.toLowerCase() == this.selectedcolname.toLowerCase();
+    }
+  }
+});
 function initializeAttachedMediaField(el, idOfUploadButton, uploadAction, mediaItemUrl, allowMultiple, tempUploadFolder) {
   var target = $(document.getElementById($(el).data('for')));
   var initialPaths = target.data("init");
@@ -412,14 +1345,15 @@ Vue.component('mediaFieldThumbsContainer', {
                     <div v-if="media.mediaPath!== \'not-found\'">\
                         <div class="thumb-container" :style="{height: thumbSize + \'px\'}" >\
                             <img v-if="media.mime.startsWith(\'image\')" \
-                            :src="media.url + \'?width=\' + thumbSize + \'&height=\' + thumbSize" \
+                            :src="buildMediaUrl(media.url, thumbSize)" \
                             :data-mime="media.mime"\
                             :style="{maxHeight: thumbSize + \'px\' , maxWidth: thumbSize + \'px\'}"/>\
                             <i v-else class="fa fa-file-o fa-lg" :data-mime="media.mime"></i>\
                          </div>\
                          <div class="media-container-main-item-title card-body">\
-                                <a href="javascript:;" class="btn btn-light btn-sm float-right inline-media-button"\
-                                v-on:click.stop="selectAndDeleteMedia(media)"><i class="fa fa-trash"></i></a>\
+                                <a href="javascript:;" class="btn btn-light btn-sm float-right inline-media-button delete-button"\
+                                    v-on:click.stop="selectAndDeleteMedia(media)"><i class="fa fa-trash"></i></a>\
+                                <a :href="media.url" target="_blank" class="btn btn-light btn-sm float-right inline-media-button view-button""><i class="fa fa-download"></i></a> \
                                 <span class="media-filename card-text small" :title="media.mediaPath">{{ media.isNew ? media.name.substr(36) : media.name }}</span>\
                          </div>\
                     </div>\
@@ -430,7 +1364,7 @@ Vue.component('mediaFieldThumbsContainer', {
                             <span class="text-danger small d-block text-center">{{ T.discardWarning }}</span>\
                         </div>\
                         <div class="media-container-main-item-title card-body">\
-                            <a href="javascript:;" class="btn btn-light btn-sm float-right inline-media-button"\
+                            <a href="javascript:;" class="btn btn-light btn-sm float-right inline-media-button delete-button"\
                                 v-on:click.stop="selectAndDeleteMedia(media)"><i class="fa fa-trash"></i></a>\
                             <span class="media-filename card-text small text-danger" :title="media.name">{{ media.name }}</span>\
                         </div>\
@@ -462,1072 +1396,9 @@ Vue.component('mediaFieldThumbsContainer', {
     },
     selectMedia: function selectMedia(media) {
       this.$parent.$emit('selectMediaRequested', media);
-    }
-  }
-});
-var initialized;
-var mediaApp;
-var _root = {
-  name: 'Media Library',
-  path: '',
-  folder: '',
-  isDirectory: true
-};
-var bus = new Vue();
-
-function initializeMediaApplication(displayMediaApplication, mediaApplicationUrl) {
-  if (initialized) {
-    return;
-  }
-
-  initialized = true;
-
-  if (!mediaApplicationUrl) {
-    console.error('mediaApplicationUrl variable is not defined');
-  }
-
-  $.ajax({
-    url: mediaApplicationUrl,
-    method: 'GET',
-    success: function success(content) {
-      $('.ta-content').append(content);
-      $(document).trigger('mediaapplication:ready');
-      mediaApp = new Vue({
-        el: '#mediaApp',
-        data: {
-          selectedFolder: _root,
-          mediaItems: [],
-          selectedMedias: [],
-          errors: [],
-          dragDropThumbnail: new Image(),
-          smallThumbs: false,
-          gridView: false,
-          mediaFilter: '',
-          sortBy: '',
-          sortAsc: true,
-          itemsInPage: []
-        },
-        created: function created() {
-          var self = this;
-          self.dragDropThumbnail.src = '/OrchardCore.Media/Images/drag-thumbnail.png';
-          bus.$on('folderSelected', function (folder) {
-            self.selectedFolder = folder;
-          });
-          bus.$on('folderDeleted', function () {
-            self.selectRoot();
-          });
-          bus.$on('folderAdded', function (folder) {
-            self.selectedFolder = folder;
-            folder.selected = true;
-          });
-          bus.$on('beforeFolderAdded', function (folder) {
-            self.loadFolder(folder);
-          });
-          bus.$on('mediaListMoved', function (errorInfo) {
-            self.loadFolder(self.selectedFolder);
-
-            if (errorInfo) {
-              self.errors.push(errorInfo);
-            }
-          });
-          bus.$on('mediaRenamed', function (newName, newPath, oldPath) {
-            var media = self.mediaItems.filter(function (item) {
-              return item.mediaPath === oldPath;
-            })[0];
-            media.mediaPath = newPath;
-            media.name = newName;
-          });
-          bus.$on('createFolderRequested', function (media) {
-            self.createFolder();
-          });
-          bus.$on('deleteFolderRequested', function (media) {
-            self.deleteFolder();
-          }); // common handlers for actions in both grid and table view.
-
-          bus.$on('sortChangeRequested', function (newSort) {
-            self.changeSort(newSort);
-          });
-          bus.$on('mediaToggleRequested', function (media) {
-            self.toggleSelectionOfMedia(media);
-          });
-          bus.$on('renameMediaRequested', function (media) {
-            self.renameMedia(media);
-          });
-          bus.$on('deleteMediaRequested', function (media) {
-            self.deleteMediaItem(media);
-          });
-          bus.$on('mediaDragStartRequested', function (media, e) {
-            self.handleDragStart(media, e);
-          }); // handler for pager events
-
-          bus.$on('pagerEvent', function (itemsInPage) {
-            self.itemsInPage = itemsInPage;
-            self.selectedMedias = [];
-          });
-          self.currentPrefs = JSON.parse(localStorage.getItem('mediaApplicationPrefs'));
-        },
-        computed: {
-          isHome: function isHome() {
-            return this.selectedFolder == _root;
-          },
-          parents: function parents() {
-            var p = [];
-            parentFolder = this.selectedFolder;
-
-            while (parentFolder && parentFolder.path != '') {
-              p.unshift(parentFolder);
-              parentFolder = parentFolder.parent;
-            }
-
-            return p;
-          },
-          root: function root() {
-            return _root;
-          },
-          filteredMediaItems: function filteredMediaItems() {
-            var self = this;
-            self.selectedMedias = [];
-            var filtered = self.mediaItems.filter(function (item) {
-              return item.name.toLowerCase().indexOf(self.mediaFilter.toLowerCase()) > -1;
-            });
-
-            switch (self.sortBy) {
-              case 'size':
-                filtered.sort(function (a, b) {
-                  return self.sortAsc ? a.size - b.size : b.size - a.size;
-                });
-                break;
-
-              case 'mime':
-                filtered.sort(function (a, b) {
-                  return self.sortAsc ? a.mime.toLowerCase().localeCompare(b.mime.toLowerCase()) : b.mime.toLowerCase().localeCompare(a.mime.toLowerCase());
-                });
-                break;
-
-              default:
-                filtered.sort(function (a, b) {
-                  return self.sortAsc ? a.name.toLowerCase().localeCompare(b.name.toLowerCase()) : b.name.toLowerCase().localeCompare(a.name.toLowerCase());
-                });
-            }
-
-            return filtered;
-          },
-          hiddenCount: function hiddenCount() {
-            var result = 0;
-            result = this.mediaItems.length - this.filteredMediaItems.length;
-            return result;
-          },
-          thumbSize: function thumbSize() {
-            return this.smallThumbs ? 160 : 240;
-          },
-          currentPrefs: {
-            get: function get() {
-              return {
-                smallThumbs: this.smallThumbs,
-                selectedFolder: this.selectedFolder,
-                gridView: this.gridView
-              };
-            },
-            set: function set(newPrefs) {
-              if (!newPrefs) {
-                return;
-              }
-
-              this.smallThumbs = newPrefs.smallThumbs;
-              this.selectedFolder = newPrefs.selectedFolder;
-              this.gridView = newPrefs.gridView;
-            }
-          }
-        },
-        watch: {
-          currentPrefs: function currentPrefs(newPrefs) {
-            localStorage.setItem('mediaApplicationPrefs', JSON.stringify(newPrefs));
-          },
-          selectedFolder: function selectedFolder(newFolder) {
-            this.mediaFilter = '';
-            this.selectedFolder = newFolder;
-            this.loadFolder(newFolder);
-          }
-        },
-        mounted: function mounted() {
-          this.$refs.rootFolder.toggle();
-        },
-        methods: {
-          uploadUrl: function uploadUrl() {
-            return this.selectedFolder ? $('#uploadFiles').val() + "?path=" + encodeURIComponent(this.selectedFolder.path) : null;
-          },
-          selectRoot: function selectRoot() {
-            this.selectedFolder = this.root;
-          },
-          loadFolder: function loadFolder(folder) {
-            this.errors = [];
-            this.selectedMedias = [];
-            var self = this;
-            $.ajax({
-              url: $('#getMediaItemsUrl').val() + "?path=" + encodeURIComponent(folder.path),
-              method: 'GET',
-              success: function success(data) {
-                data.forEach(function (item) {
-                  item.open = false;
-                });
-                self.mediaItems = data;
-                self.selectedMedias = [];
-                self.sortBy = '';
-                self.sortAsc = true;
-              },
-              error: function error(_error) {
-                console.log('error loading folder:' + folder.path);
-                self.selectRoot();
-              }
-            });
-          },
-          selectAll: function selectAll() {
-            this.selectedMedias = [];
-
-            for (var i = 0; i < this.filteredMediaItems.length; i++) {
-              this.selectedMedias.push(this.filteredMediaItems[i]);
-            }
-          },
-          unSelectAll: function unSelectAll() {
-            this.selectedMedias = [];
-          },
-          invertSelection: function invertSelection() {
-            var temp = [];
-
-            for (var i = 0; i < this.filteredMediaItems.length; i++) {
-              if (this.isMediaSelected(this.filteredMediaItems[i]) == false) {
-                temp.push(this.filteredMediaItems[i]);
-              }
-            }
-
-            this.selectedMedias = temp;
-          },
-          toggleSelectionOfMedia: function toggleSelectionOfMedia(media) {
-            if (this.isMediaSelected(media) == true) {
-              this.selectedMedias.splice(this.selectedMedias.indexOf(media), 1);
-            } else {
-              this.selectedMedias.push(media);
-            }
-          },
-          isMediaSelected: function isMediaSelected(media) {
-            var result = this.selectedMedias.some(function (element, index, array) {
-              return element.url.toLowerCase() === media.url.toLowerCase();
-            });
-            return result;
-          },
-          deleteFolder: function deleteFolder() {
-            var folder = this.selectedFolder;
-            var self = this; // The root folder can't be deleted
-
-            if (folder == this.root.model) {
-              return;
-            }
-
-            confirmDialog({
-              title: $("#deleteFolder").data("title"),
-              message: $("#deleteFolder").data("title"),
-              callback: function callback(resp) {
-                if (resp) {
-                  $.ajax({
-                    url: $('#deleteFolderUrl').val() + "?path=" + encodeURIComponent(folder.path),
-                    method: 'POST',
-                    data: {
-                      __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
-                    },
-                    success: function success(data) {
-                      bus.$emit('deleteFolder', folder);
-                    },
-                    error: function error(_error2) {
-                      console.error(_error2.responseText);
-                    }
-                  });
-                }
-              }
-            });
-          },
-          createFolder: function createFolder() {
-            $('#createFolderModal-errors').empty();
-            $('#createFolderModal').modal('show');
-            $('#createFolderModal .modal-body input').val('').focus();
-          },
-          renameMedia: function renameMedia(media) {
-            $('#renameMediaModal-errors').empty();
-            $('#renameMediaModal').modal('show');
-            $('#old-item-name').val(media.name);
-            $('#renameMediaModal .modal-body input').val(media.name).focus();
-          },
-          selectAndDeleteMedia: function selectAndDeleteMedia(media) {
-            this.deleteMedia();
-          },
-          deleteMediaList: function deleteMediaList() {
-            var mediaList = this.selectedMedias;
-            var self = this;
-
-            if (mediaList.length < 1) {
-              return;
-            }
-
-            confirmDialog({
-              title: $("#deleteMedia").data("title"),
-              message: $("#deleteMedia").data("title"),
-              callback: function callback(resp) {
-                if (resp) {
-                  var paths = [];
-
-                  for (var i = 0; i < mediaList.length; i++) {
-                    paths.push(mediaList[i].mediaPath);
-                  }
-
-                  $.ajax({
-                    url: $('#deleteMediaListUrl').val(),
-                    method: 'POST',
-                    data: {
-                      __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val(),
-                      paths: paths
-                    },
-                    success: function success(data) {
-                      for (var i = 0; i < self.selectedMedias.length; i++) {
-                        var index = self.mediaItems && self.mediaItems.indexOf(self.selectedMedias[i]);
-
-                        if (index > -1) {
-                          self.mediaItems.splice(index, 1);
-                          bus.$emit('mediaDeleted', self.selectedMedias[i]);
-                        }
-                      }
-
-                      self.selectedMedias = [];
-                    },
-                    error: function error(_error3) {
-                      console.error(_error3.responseText);
-                    }
-                  });
-                }
-              }
-            });
-          },
-          deleteMediaItem: function deleteMediaItem(media) {
-            var self = this;
-
-            if (!media) {
-              return;
-            }
-
-            confirmDialog({
-              title: $("#deleteMedia").data("title"),
-              message: $("#deleteMedia").data("title"),
-              callback: function callback(resp) {
-                if (resp) {
-                  $.ajax({
-                    url: $('#deleteMediaUrl').val() + "?path=" + encodeURIComponent(media.mediaPath),
-                    method: 'POST',
-                    data: {
-                      __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
-                    },
-                    success: function success(data) {
-                      var index = self.mediaItems && self.mediaItems.indexOf(media);
-
-                      if (index > -1) {
-                        self.mediaItems.splice(index, 1);
-                        bus.$emit('mediaDeleted', media);
-                      } //self.selectedMedia = null;
-
-                    },
-                    error: function error(_error4) {
-                      console.error(_error4.responseText);
-                    }
-                  });
-                }
-              }
-            });
-          },
-          handleDragStart: function handleDragStart(media, e) {
-            // first part of move media to folder:
-            // prepare the data that will be handled by the folder component on drop event
-            var mediaNames = [];
-            this.selectedMedias.forEach(function (item) {
-              mediaNames.push(item.name);
-            }); // in case the user drags an unselected item, we select it first
-
-            if (this.isMediaSelected(media) == false) {
-              mediaNames.push(media.name);
-              this.selectedMedias.push(media);
-            }
-
-            e.dataTransfer.setData('mediaNames', JSON.stringify(mediaNames));
-            e.dataTransfer.setData('sourceFolder', this.selectedFolder.path);
-            e.dataTransfer.setDragImage(this.dragDropThumbnail, 10, 10);
-            e.dataTransfer.effectAllowed = 'move';
-          },
-          handleScrollWhileDrag: function handleScrollWhileDrag(e) {
-            if (e.clientY < 150) {
-              window.scrollBy(0, -10);
-            }
-
-            if (e.clientY > window.innerHeight - 100) {
-              window.scrollBy(0, 10);
-            }
-          },
-          changeSort: function changeSort(newSort) {
-            if (this.sortBy == newSort) {
-              this.sortAsc = !this.sortAsc;
-            } else {
-              this.sortAsc = true;
-              this.sortBy = newSort;
-            }
-          }
-        }
-      });
-      $('#create-folder-name').keypress(function (e) {
-        var key = e.which;
-
-        if (key == 13) {
-          // the enter key code
-          $('#modalFooterOk').click();
-          return false;
-        }
-      });
-      $('#modalFooterOk').on('click', function (e) {
-        var name = $('#create-folder-name').val();
-
-        if (name === "") {
-          return;
-        }
-
-        $.ajax({
-          url: $('#createFolderUrl').val() + "?path=" + encodeURIComponent(mediaApp.selectedFolder.path) + "&name=" + encodeURIComponent(name),
-          method: 'POST',
-          data: {
-            __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
-          },
-          success: function success(data) {
-            bus.$emit('addFolder', mediaApp.selectedFolder, data);
-            $('#createFolderModal').modal('hide');
-          },
-          error: function error(_error5) {
-            $('#createFolderModal-errors').empty();
-            var errorMessage = JSON.parse(_error5.responseText).value;
-            $('<div class="alert alert-danger" role="alert"></div>').text(errorMessage).appendTo($('#createFolderModal-errors'));
-          }
-        });
-      });
-      $('#renameMediaModalFooterOk').on('click', function (e) {
-        var newName = $('#new-item-name').val();
-        var oldName = $('#old-item-name').val();
-
-        if (newName === "") {
-          return;
-        }
-
-        var currentFolder = mediaApp.selectedFolder.path + "/";
-
-        if (currentFolder === "/") {
-          currentFolder = "";
-        }
-
-        var newPath = currentFolder + newName;
-        var oldPath = currentFolder + oldName;
-
-        if (newPath.toLowerCase() === oldPath.toLowerCase()) {
-          $('#renameMediaModal').modal('hide');
-          return;
-        }
-
-        $.ajax({
-          url: $('#renameMediaUrl').val() + "?oldPath=" + encodeURIComponent(oldPath) + "&newPath=" + encodeURIComponent(newPath),
-          method: 'POST',
-          data: {
-            __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val()
-          },
-          success: function success(data) {
-            $('#renameMediaModal').modal('hide');
-            bus.$emit('mediaRenamed', newName, newPath, oldPath);
-          },
-          error: function error(_error6) {
-            $('#renameMediaModal-errors').empty();
-            var errorMessage = JSON.parse(_error6.responseText).value;
-            $('<div class="alert alert-danger" role="alert"></div>').text(errorMessage).appendTo($('#renameMediaModal-errors'));
-          }
-        });
-      });
-
-      if (displayMediaApplication) {
-        document.getElementById('mediaApp').style.display = "";
-      }
-
-      $(document).trigger('mediaApp:ready');
     },
-    error: function error(_error7) {
-      console.error(_error7.responseText);
-    }
-  });
-}
-$(document).on('mediaApp:ready', function () {
-  $('#fileupload').fileupload({
-    dropZone: $('#mediaApp'),
-    limitConcurrentUploads: 20,
-    dataType: 'json',
-    url: $('#uploadFiles').val(),
-    formData: function formData() {
-      var antiForgeryToken = $("input[name=__RequestVerificationToken]").val();
-      return [{
-        name: 'path',
-        value: mediaApp.selectedFolder.path
-      }, {
-        name: '__RequestVerificationToken',
-        value: antiForgeryToken
-      }];
-    },
-    done: function done(e, data) {
-      $.each(data.result.files, function (index, file) {
-        if (!file.error) {
-          mediaApp.mediaItems.push(file);
-        }
-      });
-    }
-  });
-});
-$(document).bind('dragover', function (e) {
-  var dt = e.originalEvent.dataTransfer;
-
-  if (dt.types && (dt.types.indexOf ? dt.types.indexOf('Files') != -1 : dt.types.contains('Files'))) {
-    var dropZone = $('#customdropzone'),
-        timeout = window.dropZoneTimeout;
-
-    if (timeout) {
-      clearTimeout(timeout);
-    } else {
-      dropZone.addClass('in');
-    }
-
-    var hoveredDropZone = $(e.target).closest(dropZone);
-    window.dropZoneTimeout = setTimeout(function () {
-      window.dropZoneTimeout = null;
-      dropZone.removeClass('in');
-    }, 100);
-  }
-});
-// <folder> component
-Vue.component('folder', {
-  template: '\
-        <li :class="{selected: isSelected}" \
-                v-on:dragleave.prevent = "handleDragLeave($event);" \
-                v-on:dragover.prevent.stop="handleDragOver($event);" \
-                v-on:drop.prevent.stop = "moveMediaToFolder(model, $event)" >\
-            <div :class="{folderhovered: isHovered , treeroot: level == 1}" >\
-                <a href="javascript:;" :style="{ padding' + (document.dir == "ltr" ? "Left" : "Right") + ':padding + \'px\' }" v-on:click="select"  draggable="false" class="folder-menu-item">\
-                  <span v-on:click.stop="toggle" class="expand" :class="{opened: open, closed: !open, empty: empty}"><i class="fas fa-chevron-right"></i></span>  \
-                  <div class="folder-name">{{model.name}}</div>\
-                    <div class="btn-group folder-actions" >\
-                            <a v-cloak href="javascript:;" class="btn btn-sm" v-on:click="createFolder" v-show="isSelected || isRoot"> <i class="fa fa-plus"></i></a>\
-                            <a v-cloak href="javascript:;" class="btn btn-sm" v-on:click="deleteFolder" v-show="isSelected && !isRoot"><i class="fa fa-trash"></i></a>\
-                    </div>\
-                </a>\
-            </div>\
-            <ol v-show="open">\
-                <folder v-for="folder in children"\
-                        :key="folder.path"\
-                        :model="folder" \
-                        :selected-in-media-app="selectedInMediaApp" \
-                        :level="level + 1">\
-                </folder>\
-            </ol>\
-        </li>\
-        ',
-  props: {
-    model: Object,
-    selectedInMediaApp: Object,
-    level: Number
-  },
-  data: function data() {
-    return {
-      open: false,
-      children: null,
-      // not initialized state (for lazy-loading)
-      parent: null,
-      isHovered: false,
-      padding: 0
-    };
-  },
-  computed: {
-    empty: function empty() {
-      return !this.children || this.children.length == 0;
-    },
-    isSelected: function isSelected() {
-      return this.selectedInMediaApp.name == this.model.name && this.selectedInMediaApp.path == this.model.path;
-    },
-    isRoot: function isRoot() {
-      return this.model.path === '';
-    }
-  },
-  mounted: function mounted() {
-    if (this.isRoot == false && this.isAncestorOfSelectedFolder()) {
-      this.toggle();
-    }
-
-    this.padding = this.level < 3 ? 26 : 26 + this.level * 8;
-  },
-  created: function created() {
-    var self = this;
-    bus.$on('deleteFolder', function (folder) {
-      if (self.children) {
-        var index = self.children && self.children.indexOf(folder);
-
-        if (index > -1) {
-          self.children.splice(index, 1);
-          bus.$emit('folderDeleted');
-        }
-      }
-    });
-    bus.$on('addFolder', function (target, folder) {
-      if (self.model == target) {
-        bus.$emit('beforeFolderAdded', self.model);
-
-        if (self.children !== null) {
-          self.children.push(folder);
-        }
-
-        folder.parent = self.model;
-        bus.$emit('folderAdded', folder);
-      }
-    });
-  },
-  methods: {
-    isAncestorOfSelectedFolder: function isAncestorOfSelectedFolder() {
-      parentFolder = mediaApp.selectedFolder;
-
-      while (parentFolder) {
-        if (parentFolder.path == this.model.path) {
-          return true;
-        }
-
-        parentFolder = parentFolder.parent;
-      }
-
-      return false;
-    },
-    toggle: function toggle() {
-      this.open = !this.open;
-
-      if (this.open && !this.children) {
-        this.loadChildren();
-      }
-    },
-    select: function select() {
-      bus.$emit('folderSelected', this.model);
-      this.loadChildren();
-    },
-    createFolder: function createFolder() {
-      bus.$emit('createFolderRequested');
-    },
-    deleteFolder: function deleteFolder() {
-      bus.$emit('deleteFolderRequested');
-    },
-    loadChildren: function loadChildren() {
-      var self = this;
-
-      if (this.open == false) {
-        this.open = true;
-      }
-
-      $.ajax({
-        url: $('#getFoldersUrl').val() + "?path=" + encodeURIComponent(self.model.path),
-        method: 'GET',
-        success: function success(data) {
-          self.children = data;
-          self.children.forEach(function (c) {
-            c.parent = self.model;
-          });
-        },
-        error: function error(_error) {
-          emtpy = false;
-          console.error(_error.responseText);
-        }
-      });
-    },
-    handleDragOver: function handleDragOver(e) {
-      this.isHovered = true;
-    },
-    handleDragLeave: function handleDragLeave(e) {
-      this.isHovered = false;
-    },
-    moveMediaToFolder: function moveMediaToFolder(folder, e) {
-      var self = this;
-      self.isHovered = false;
-      var mediaNames = JSON.parse(e.dataTransfer.getData('mediaNames'));
-
-      if (mediaNames.length < 1) {
-        return;
-      }
-
-      var sourceFolder = e.dataTransfer.getData('sourceFolder');
-      var targetFolder = folder.path;
-
-      if (sourceFolder === '') {
-        sourceFolder = 'root';
-      }
-
-      if (targetFolder === '') {
-        targetFolder = 'root';
-      }
-
-      if (sourceFolder === targetFolder) {
-        alert($('#sameFolderMessage').val());
-        return;
-      }
-
-      if (!confirm($('#moveMediaMessage').val())) {
-        return;
-      }
-
-      $.ajax({
-        url: $('#moveMediaListUrl').val(),
-        method: 'POST',
-        data: {
-          __RequestVerificationToken: $("input[name='__RequestVerificationToken']").val(),
-          mediaNames: mediaNames,
-          sourceFolder: sourceFolder,
-          targetFolder: targetFolder
-        },
-        success: function success() {
-          bus.$emit('mediaListMoved'); // MediaApp will listen to this, and then it will reload page so the moved medias won't be there anymore
-        },
-        error: function error(_error2) {
-          console.error(_error2.responseText);
-          bus.$emit('mediaListMoved', _error2.responseText);
-        }
-      });
-    }
-  }
-});
-// <media-items-grid> component
-Vue.component('mediaItemsGrid', {
-  template: '\
-        <ol class="row media-items-grid">\
-                <li v-for="media in filteredMediaItems" \
-                    :key="media.name" \
-                    class="media-item media-container-main-list-item card" \
-                    :style="{width: thumbSize + 2 + \'px\'}" \
-                    :class="{selected: isMediaSelected(media)}" \
-                    v-on:click.stop="toggleSelectionOfMedia(media)" \
-                    draggable="true" v-on:dragstart="dragStart(media, $event)"> \
-                    <div class="thumb-container" :style="{height: thumbSize + \'px\'}"> \
-                        <img v-if="media.mime.startsWith(\'image\')" \
-                                :src="media.url + \'?width=\' + thumbSize + \'&height=\' + thumbSize" \
-                                :data-mime="media.mime" \
-                                :style="{maxHeight: thumbSize + \'px\', maxWidth: thumbSize + \'px\'}" /> \
-                        <i v-else class="fa fa-file-o fa-lg" :data-mime="media.mime"></i> \
-                    </div> \
-                <div class="media-container-main-item-title card-body"> \
-                        <a href="javascript:;" class="btn btn-light btn-sm float-right inline-media-button edit-button mr-4" v-on:click.stop="renameMedia(media)"><i class="fa fa-edit"></i></a> \
-                        <a href="javascript:;" class="btn btn-light btn-sm float-right inline-media-button delete-button" v-on:click.stop="deleteMedia(media)"><i class="fa fa-trash"></i></a> \
-                        <span class="media-filename card-text small" :title="media.name">{{ media.name }}</span> \
-                    </div> \
-                 </li> \
-        </ol>\
-        \
-        ',
-  data: function data() {
-    return {
-      T: {}
-    };
-  },
-  props: {
-    filteredMediaItems: Array,
-    selectedMedias: Array,
-    thumbSize: Number
-  },
-  created: function created() {
-    var self = this; // retrieving localized strings from view
-
-    self.T.editButton = $('#t-edit-button').val();
-    self.T.deleteButton = $('#t-delete-button').val();
-  },
-  methods: {
-    isMediaSelected: function isMediaSelected(media) {
-      var result = this.selectedMedias.some(function (element, index, array) {
-        return element.url.toLowerCase() === media.url.toLowerCase();
-      });
-      return result;
-    },
-    toggleSelectionOfMedia: function toggleSelectionOfMedia(media) {
-      bus.$emit('mediaToggleRequested', media);
-    },
-    renameMedia: function renameMedia(media) {
-      bus.$emit('renameMediaRequested', media);
-    },
-    deleteMedia: function deleteMedia(media) {
-      bus.$emit('deleteMediaRequested', media);
-    },
-    dragStart: function dragStart(media, e) {
-      bus.$emit('mediaDragStartRequested', media, e);
-    }
-  }
-});
-// <media-items-table> component
-Vue.component('mediaItemsTable', {
-  template: '\
-        <table class="table media-items-table"> \
-            <thead> \
-                <tr class="header-row"> \
-                    <th scope="col" class="thumbnail-column">{{ T.imageHeader }}</th> \
-                    <th scope="col" v-on:click="changeSort(\'name\')"> \
-                       {{ T.nameHeader }} \
-                         <sort-indicator colname="name" :selectedcolname="sortBy" :asc="sortAsc"></sort-indicator> \
-                    </th> \
-                    <th scope="col" v-on:click="changeSort(\'size\')"> \
-                        <span class="optional-col"> \
-                            {{ T.sizeHeader }} \
-                         <sort-indicator colname="size" :selectedcolname="sortBy" :asc="sortAsc"></sort-indicator> \
-                        </span> \
-                    </th> \
-                    <th scope="col" v-on:click="changeSort(\'mime\')"> \
-                        <span class="optional-col"> \
-                           {{ T.typeHeader }} \
-                         <sort-indicator colname="mime" :selectedcolname="sortBy" :asc="sortAsc"></sort-indicator> \
-                        </span> \
-                    </th> \
-                </tr>\
-            </thead>\
-            <tbody> \
-                    <tr v-for="media in filteredMediaItems" \
-                          class="media-item" \
-                          :class="{selected: isMediaSelected(media)}" \
-                          v-on:click.stop="toggleSelectionOfMedia(media)" \
-                          draggable="true" v-on:dragstart="dragStart(media, $event)" \
-                          :key="media.name"> \
-                             <td class="thumbnail-column"> \
-                                <div class="img-wrapper"> \
-                                    <img v-if="media.mime.startsWith(\'image\')" draggable="false" :src="media.url + \'?width=\' + thumbSize + \'&height=\' + thumbSize" /> \
-                                    <i v-else class="fa fa-file-o fa-lg" :data-mime="media.mime"></i> \
-                                </div> \
-                            </td> \
-                            <td> \
-                                <div class="media-name-cell"> \
-                                   <span class="break-word"> {{ media.name }} </span>\
-                                    <div class="buttons-container"> \
-                                        <a href="javascript:;" class="btn btn-link btn-sm mr-1 edit-button" v-on:click.stop="renameMedia(media)"> {{ T.editButton }} </a > \
-                                        <a href="javascript:;" class="btn btn-link btn-sm delete-button" v-on:click.stop="deleteMedia(media)"> {{ T.deleteButton }} </a> \
-                                        <a :href="media.url" class="btn btn-link btn-sm view-button"> {{ T.viewButton }} </a> \
-                                    </div> \
-                                </div> \
-                            </td> \
-                            <td> \
-                                <div class="text-col optional-col"> {{ isNaN(media.size)? 0 : Math.round(media.size / 1024) }} KB</div> \
-                            </td> \
-                            <td> \
-                                <div class="text-col optional-col">{{ media.mime }}</div> \
-                            </td> \
-                   </tr>\
-            </tbody>\
-        </table> \
-        ',
-  data: function data() {
-    return {
-      T: {}
-    };
-  },
-  props: {
-    sortBy: String,
-    sortAsc: Boolean,
-    filteredMediaItems: Array,
-    selectedMedias: Array,
-    thumbSize: Number
-  },
-  created: function created() {
-    var self = this;
-    self.T.imageHeader = $('#t-image-header').val();
-    self.T.nameHeader = $('#t-name-header').val();
-    self.T.sizeHeader = $('#t-size-header').val();
-    self.T.typeHeader = $('#t-type-header').val();
-    self.T.editButton = $('#t-edit-button').val();
-    self.T.deleteButton = $('#t-delete-button').val();
-    self.T.viewButton = $('#t-view-button').val();
-  },
-  methods: {
-    isMediaSelected: function isMediaSelected(media) {
-      var result = this.selectedMedias.some(function (element, index, array) {
-        return element.url.toLowerCase() === media.url.toLowerCase();
-      });
-      return result;
-    },
-    changeSort: function changeSort(newSort) {
-      bus.$emit('sortChangeRequested', newSort);
-    },
-    toggleSelectionOfMedia: function toggleSelectionOfMedia(media) {
-      bus.$emit('mediaToggleRequested', media);
-    },
-    renameMedia: function renameMedia(media) {
-      bus.$emit('renameMediaRequested', media);
-    },
-    deleteMedia: function deleteMedia(media) {
-      bus.$emit('deleteMediaRequested', media);
-    },
-    dragStart: function dragStart(media, e) {
-      bus.$emit('mediaDragStartRequested', media, e);
-    }
-  }
-});
-// This component receives a list of all the items, unpaged.
-// As the user interacts with the pager, it raises events with the items in the current page.
-// It's the parent's responsibility to listen for these events and display the received items
-// <pager> component
-Vue.component('pager', {
-  template: '\
-        <nav id="media-pager" aria-label="Pagination Navigation" role="navigation" :data-computed-trigger="itemsInCurrentPage.length">\
-            <ul class= "pagination  pagination-sm"> \
-                <li class="page-item media-first-button" :class="{disabled : !canDoFirst}"> \
-                    <a class="page-link" href="#" :tabindex="canDoFirst ? 0 : -1" v-on:click="goFirst">{{ T.pagerFirstButton }}</a> \
-                </li> \
-                <li class="page-item" :class="{disabled : !canDoPrev}"> \
-                    <a class="page-link" href="#" :tabindex="canDoPrev ? 0 : -1" v-on:click="previous">{{ T.pagerPreviousButton }}</a> \
-                </li> \
-                <li  v-if="link !== -1" class="page-item page-number"  :class="{active : current == link - 1}" v-for="link in pageLinks"> \
-                    <a class="page-link" href="#" v-on:click="goTo(link - 1)" :aria-label="\'Goto Page \' + link">\
-                        {{link}} \
-                        <span v-if="current == link -1" class="sr-only">(current)</span>\
-                    </a> \
-                </li> \
-                <li class="page-item" :class="{disabled : !canDoNext}"> \
-                    <a class="page-link" href="#" :tabindex="canDoNext ? 0 : -1" v-on:click="next">{{ T.pagerNextButton }}</a> \
-                </li> \
-                <li class="page-item media-last-button" :class="{disabled : !canDoLast}"> \
-                    <a class="page-link" href="#" :tabindex="canDoLast ? 0 : -1" v-on:click="goLast">{{ T.pagerLastButton }}</a> \
-                </li> \
-                <li class="page-item ml-4 page-size-info">\
-                    <div style="display: flex;">\
-                        <span class="page-link disabled text-muted page-size-label">{{ T.pagerPageSizeLabel }}</span>\
-                        <select id="pageSizeSelect" class="page-link" v-model="pageSize"> \
-                            <option v-for="option in pageSizeOptions" v-bind:value="option"> \
-                                {{option}} \
-                            </option> \
-                        </select> \
-                    </div>\
-                </li> \
-                <li class="page-item ml-4 page-info"> \
-                    <span class="page-link disabled text-muted ">{{ T.pagerPageLabel }} {{current + 1}}/{{totalPages}}</span> \
-                </li> \
-                <li class="page-item ml-4 total-info"> \
-                     <span class="page-link disabled text-muted "> {{ T.pagerTotalLabel }} {{total}}</span> \
-                </li> \
-            </ul> \
-        </nav>\
-        ',
-  props: {
-    sourceItems: Array
-  },
-  data: function data() {
-    return {
-      pageSize: 5,
-      pageSizeOptions: [5, 10, 30, 50, 100],
-      current: 0,
-      T: {}
-    };
-  },
-  created: function created() {
-    var self = this; // retrieving localized strings from view
-
-    self.T.pagerFirstButton = $('#t-pager-first-button').val();
-    self.T.pagerPreviousButton = $('#t-pager-previous-button').val();
-    self.T.pagerNextButton = $('#t-pager-next-button').val();
-    self.T.pagerLastButton = $('#t-pager-last-button').val();
-    self.T.pagerPageSizeLabel = $('#t-pager-page-size-label').val();
-    self.T.pagerPageLabel = $('#t-pager-page-label').val();
-    self.T.pagerTotalLabel = $('#t-pager-total-label').val();
-  },
-  methods: {
-    next: function next() {
-      this.current = this.current + 1;
-    },
-    previous: function previous() {
-      this.current = this.current - 1;
-    },
-    goFirst: function goFirst() {
-      this.current = 0;
-    },
-    goLast: function goLast() {
-      this.current = this.totalPages - 1;
-    },
-    goTo: function goTo(targetPage) {
-      this.current = targetPage;
-    }
-  },
-  computed: {
-    total: function total() {
-      return this.sourceItems ? this.sourceItems.length : 0;
-    },
-    totalPages: function totalPages() {
-      var pages = Math.ceil(this.total / this.pageSize);
-      return pages > 0 ? pages : 1;
-    },
-    isLastPage: function isLastPage() {
-      return this.current + 1 >= this.totalPages;
-    },
-    isFirstPage: function isFirstPage() {
-      return this.current === 0;
-    },
-    canDoNext: function canDoNext() {
-      return !this.isLastPage;
-    },
-    canDoPrev: function canDoPrev() {
-      return !this.isFirstPage;
-    },
-    canDoFirst: function canDoFirst() {
-      return !this.isFirstPage;
-    },
-    canDoLast: function canDoLast() {
-      return !this.isLastPage;
-    },
-    // this computed is only to have a central place where we detect changes and leverage Vue JS reactivity to raise our event.
-    // That event will be handled by the parent media app to display the items in the page.
-    // this logic will not run if the computed property is not used in the template. We use a dummy "data-computed-trigger" attribute for that.
-    itemsInCurrentPage: function itemsInCurrentPage() {
-      var start = this.pageSize * this.current;
-      var end = start + this.pageSize;
-      var result = this.sourceItems.slice(start, end);
-      bus.$emit('pagerEvent', result);
-      return result;
-    },
-    pageLinks: function pageLinks() {
-      var links = [];
-      links.push(this.current + 1); // Add 2 items before current
-
-      var beforeCurrent = this.current > 0 ? this.current : -1;
-      links.unshift(beforeCurrent);
-      var beforeBeforeCurrent = this.current > 1 ? this.current - 1 : -1;
-      links.unshift(beforeBeforeCurrent); // Add 2 items after current
-
-      var afterCurrent = this.totalPages - this.current > 1 ? this.current + 2 : -1;
-      links.push(afterCurrent);
-      var afterAfterCurrent = this.totalPages - this.current > 2 ? this.current + 3 : -1;
-      links.push(afterAfterCurrent);
-      return links;
-    }
-  },
-  watch: {
-    sourceItems: function sourceItems() {
-      this.current = 0; // resetting current page after receiving a new list of unpaged items
-    },
-    pageSize: function pageSize() {
-      this.current = 0;
-    }
-  }
-});
-// <sort-indicator> component
-Vue.component('sortIndicator', {
-  template: '\
-        <div v-show="isActive" class="sort-indicator"> \
-            <span v-show="asc"><i class="small fa fa-chevron-up"></i></span> \
-            <span v-show="!asc"><i class="small fa fa-chevron-down"></i></span> \
-        </div> \
-        ',
-  props: {
-    colname: String,
-    selectedcolname: String,
-    asc: Boolean
-  },
-  computed: {
-    isActive: function isActive() {
-      return this.colname.toLowerCase() == this.selectedcolname.toLowerCase();
+    buildMediaUrl: function buildMediaUrl(url, thumbSize) {
+      return url + (url.indexOf('?') == -1 ? '?' : '&') + 'width=' + thumbSize + '&height=' + thumbSize;
     }
   }
 });
@@ -1690,7 +1561,7 @@ Vue.component('uploadList', {
     }
   }
 });
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 /*
  * jQuery File Upload Plugin
@@ -1703,11 +1574,9 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
  * https://opensource.org/licenses/MIT
  */
 
-/* jshint nomen:false */
+/* global define, require */
 
-/* global define, require, window, document, location, Blob, FormData */
-;
-
+/* eslint-disable new-cap */
 (function (factory) {
   'use strict';
 
@@ -1723,11 +1592,11 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
   }
 })(function ($) {
   'use strict'; // Detect file input support, based on
-  // http://viljamis.com/blog/2012/file-upload-support-on-mobile/
+  // https://viljamis.com/2012/file-upload-support-on-mobile/
 
   $.support.fileInput = !(new RegExp( // Handle devices which give false positives for the feature detection:
   '(Android (1\\.[0156]|2\\.[01]))' + '|(Windows Phone (OS 7|8\\.0))|(XBLWP)|(ZuneWP)|(WPDesktop)' + '|(w(eb)?OSBrowser)|(webOS)' + '|(Kindle/(1\\.0|2\\.[05]|3\\.0))').test(window.navigator.userAgent) || // Feature detection for all other devices:
-  $('<input type="file">').prop('disabled')); // The FileReader API is not actually used, but works as feature detection,
+  $('<input type="file"/>').prop('disabled')); // The FileReader API is not actually used, but works as feature detection,
   // as some Safari versions (5?) support XHR file uploads via the FormData API,
   // but not non-multipart XHR file uploads.
   // window.XMLHttpRequestUpload is not available on IE10, so we check for
@@ -1736,7 +1605,13 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
   $.support.xhrFileUpload = !!(window.ProgressEvent && window.FileReader);
   $.support.xhrFormDataFileUpload = !!window.FormData; // Detect support for Blob slicing (required for chunked uploads):
 
-  $.support.blobSlice = window.Blob && (Blob.prototype.slice || Blob.prototype.webkitSlice || Blob.prototype.mozSlice); // Helper function to create drag handlers for dragover/dragenter/dragleave:
+  $.support.blobSlice = window.Blob && (Blob.prototype.slice || Blob.prototype.webkitSlice || Blob.prototype.mozSlice);
+  /**
+   * Helper function to create drag handlers for dragover/dragenter/dragleave
+   *
+   * @param {string} type Event type
+   * @returns {Function} Drag handler
+   */
 
   function getDragHandler(type) {
     var isDragOver = type === 'dragover';
@@ -1844,6 +1719,15 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       bitrateInterval: 500,
       // By default, uploads are started automatically when adding files:
       autoUpload: true,
+      // By default, duplicate file names are expected to be handled on
+      // the server-side. If this is not possible (e.g. when uploading
+      // files directly to Amazon S3), the following option can be set to
+      // an empty object or an object mapping existing filenames, e.g.:
+      // { "image.jpg": true, "image (1).jpg": true }
+      // If it is set, all files will be uploaded with unique filenames,
+      // adding increasing number suffixes if necessary, e.g.:
+      // "image (2).jpg"
+      uniqueFilenames: undefined,
       // Error and info messages:
       messages: {
         uploadedBytes: 'Uploaded bytes exceed file size'
@@ -1851,10 +1735,12 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       // Translation function, gets the message key to be translated
       // and an object with context specific data as arguments:
       i18n: function i18n(message, context) {
+        // eslint-disable-next-line no-param-reassign
         message = this.messages[message] || message.toString();
 
         if (context) {
           $.each(context, function (key, value) {
+            // eslint-disable-next-line no-param-reassign
             message = message.replace('{' + key + '}', value);
           });
         }
@@ -1880,7 +1766,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       // and allows you to override plugin options as well as define ajax settings.
       //
       // Listeners for this callback can also be bound the following way:
-      // .bind('fileuploadadd', func);
+      // .on('fileuploadadd', func);
       //
       // data.submit() returns a Promise object and allows to attach additional
       // handlers using jQuery's Deferred callbacks:
@@ -1898,39 +1784,41 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       },
       // Other callbacks:
       // Callback for the submit event of each file upload:
-      // submit: function (e, data) {}, // .bind('fileuploadsubmit', func);
+      // submit: function (e, data) {}, // .on('fileuploadsubmit', func);
       // Callback for the start of each file upload request:
-      // send: function (e, data) {}, // .bind('fileuploadsend', func);
+      // send: function (e, data) {}, // .on('fileuploadsend', func);
       // Callback for successful uploads:
-      // done: function (e, data) {}, // .bind('fileuploaddone', func);
+      // done: function (e, data) {}, // .on('fileuploaddone', func);
       // Callback for failed (abort or error) uploads:
-      // fail: function (e, data) {}, // .bind('fileuploadfail', func);
+      // fail: function (e, data) {}, // .on('fileuploadfail', func);
       // Callback for completed (success, abort or error) requests:
-      // always: function (e, data) {}, // .bind('fileuploadalways', func);
+      // always: function (e, data) {}, // .on('fileuploadalways', func);
       // Callback for upload progress events:
-      // progress: function (e, data) {}, // .bind('fileuploadprogress', func);
+      // progress: function (e, data) {}, // .on('fileuploadprogress', func);
       // Callback for global upload progress events:
-      // progressall: function (e, data) {}, // .bind('fileuploadprogressall', func);
+      // progressall: function (e, data) {}, // .on('fileuploadprogressall', func);
       // Callback for uploads start, equivalent to the global ajaxStart event:
-      // start: function (e) {}, // .bind('fileuploadstart', func);
+      // start: function (e) {}, // .on('fileuploadstart', func);
       // Callback for uploads stop, equivalent to the global ajaxStop event:
-      // stop: function (e) {}, // .bind('fileuploadstop', func);
+      // stop: function (e) {}, // .on('fileuploadstop', func);
       // Callback for change events of the fileInput(s):
-      // change: function (e, data) {}, // .bind('fileuploadchange', func);
+      // change: function (e, data) {}, // .on('fileuploadchange', func);
       // Callback for paste events to the pasteZone(s):
-      // paste: function (e, data) {}, // .bind('fileuploadpaste', func);
+      // paste: function (e, data) {}, // .on('fileuploadpaste', func);
       // Callback for drop events of the dropZone(s):
-      // drop: function (e, data) {}, // .bind('fileuploaddrop', func);
+      // drop: function (e, data) {}, // .on('fileuploaddrop', func);
       // Callback for dragover events of the dropZone(s):
-      // dragover: function (e) {}, // .bind('fileuploaddragover', func);
+      // dragover: function (e) {}, // .on('fileuploaddragover', func);
+      // Callback before the start of each chunk upload request (before form data initialization):
+      // chunkbeforesend: function (e, data) {}, // .on('fileuploadchunkbeforesend', func);
       // Callback for the start of each chunk upload request:
-      // chunksend: function (e, data) {}, // .bind('fileuploadchunksend', func);
+      // chunksend: function (e, data) {}, // .on('fileuploadchunksend', func);
       // Callback for successful chunk uploads:
-      // chunkdone: function (e, data) {}, // .bind('fileuploadchunkdone', func);
+      // chunkdone: function (e, data) {}, // .on('fileuploadchunkdone', func);
       // Callback for failed (abort or error) chunk uploads:
-      // chunkfail: function (e, data) {}, // .bind('fileuploadchunkfail', func);
+      // chunkfail: function (e, data) {}, // .on('fileuploadchunkfail', func);
       // Callback for completed (success, abort or error) chunk upload requests:
-      // chunkalways: function (e, data) {}, // .bind('fileuploadchunkalways', func);
+      // chunkalways: function (e, data) {}, // .on('fileuploadchunkalways', func);
       // The plugin options are used as settings object for the ajax calls.
       // The following are jQuery ajax settings required for the file uploads:
       processData: false,
@@ -1938,6 +1826,15 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       cache: false,
       timeout: 0
     },
+    // jQuery versions before 1.8 require promise.pipe if the return value is
+    // used, as promise.then in older versions has a different behavior, see:
+    // https://blog.jquery.com/2012/08/09/jquery-1-8-released/
+    // https://bugs.jquery.com/ticket/11010
+    // https://github.com/blueimp/jQuery-File-Upload/pull/3435
+    _promisePipe: function () {
+      var parts = $.fn.jquery.split('.');
+      return Number(parts[0]) > 1 || Number(parts[1]) > 7 ? 'then' : 'pipe';
+    }(),
     // A list of options that require reinitializing event listeners and/or
     // special initialization code:
     _specialOptions: ['fileInput', 'dropZone', 'pasteZone', 'multipart', 'forceIframeTransport'],
@@ -2014,7 +1911,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
 
       if (obj._response) {
         for (prop in obj._response) {
-          if (obj._response.hasOwnProperty(prop)) {
+          if (Object.prototype.hasOwnProperty.call(obj._response, prop)) {
             delete obj._response[prop];
           }
         }
@@ -2059,7 +1956,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       // for the upload progress event:
 
       if (xhr.upload) {
-        $(xhr.upload).bind('progress', function (e) {
+        $(xhr.upload).on('progress', function (e) {
           var oe = e.originalEvent; // Make sure the progress event properties get copied over:
 
           e.lengthComputable = oe.lengthComputable;
@@ -2074,9 +1971,33 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
         };
       }
     },
+    _deinitProgressListener: function _deinitProgressListener(options) {
+      var xhr = options.xhr ? options.xhr() : $.ajaxSettings.xhr();
+
+      if (xhr.upload) {
+        $(xhr.upload).off('progress');
+      }
+    },
     _isInstanceOf: function _isInstanceOf(type, obj) {
       // Cross-frame instanceof check
       return Object.prototype.toString.call(obj) === '[object ' + type + ']';
+    },
+    _getUniqueFilename: function _getUniqueFilename(name, map) {
+      // eslint-disable-next-line no-param-reassign
+      name = String(name);
+
+      if (map[name]) {
+        // eslint-disable-next-line no-param-reassign
+        name = name.replace(/(?: \(([\d]+)\))?(\.[^.]+)?$/, function (_, p1, p2) {
+          var index = p1 ? Number(p1) + 1 : 1;
+          var ext = p2 || '';
+          return ' (' + index + ')' + ext;
+        });
+        return this._getUniqueFilename(name, map);
+      }
+
+      map[name] = true;
+      return name;
     },
     _initXHRData: function _initXHRData(options) {
       var that = this,
@@ -2092,7 +2013,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       }
 
       if (!multipart || options.blob || !this._isInstanceOf('File', file)) {
-        options.headers['Content-Disposition'] = 'attachment; filename="' + encodeURI(file.name) + '"';
+        options.headers['Content-Disposition'] = 'attachment; filename="' + encodeURI(file.uploadName || file.name) + '"';
       }
 
       if (!multipart) {
@@ -2130,13 +2051,19 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
           }
 
           if (options.blob) {
-            formData.append(paramName, options.blob, file.name);
+            formData.append(paramName, options.blob, file.uploadName || file.name);
           } else {
             $.each(options.files, function (index, file) {
               // This check allows the tests to run with
               // dummy objects:
               if (that._isInstanceOf('File', file) || that._isInstanceOf('Blob', file)) {
-                formData.append($.type(options.paramName) === 'array' && options.paramName[index] || paramName, file, file.uploadName || file.name);
+                var fileName = file.uploadName || file.name;
+
+                if (options.uniqueFilenames) {
+                  fileName = that._getUniqueFilename(fileName, options.uniqueFilenames);
+                }
+
+                formData.append($.type(options.paramName) === 'array' && options.paramName[index] || paramName, file, fileName);
               }
             });
           }
@@ -2274,7 +2201,8 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
     // the jqXHR methods abort, success, error and complete:
     _getXHRPromise: function _getXHRPromise(resolveOrReject, context, args) {
       var dfd = $.Deferred(),
-          promise = dfd.promise();
+          promise = dfd.promise(); // eslint-disable-next-line no-param-reassign
+
       context = context || this.options.context || promise;
 
       if (resolveOrReject === true) {
@@ -2295,13 +2223,13 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
 
       data.process = function (resolveFunc, rejectFunc) {
         if (resolveFunc || rejectFunc) {
-          data._processQueue = this._processQueue = (this._processQueue || getPromise([this])).then(function () {
+          data._processQueue = this._processQueue = (this._processQueue || getPromise([this]))[that._promisePipe](function () {
             if (data.errorThrown) {
               return $.Deferred().rejectWith(that, [data]).promise();
             }
 
             return getPromise(arguments);
-          }).then(resolveFunc, rejectFunc);
+          })[that._promisePipe](resolveFunc, rejectFunc);
         }
 
         return this._processQueue || getPromise([this]);
@@ -2378,7 +2306,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
           jqXHR,
           _upload;
 
-      if (!(this._isXHRUpload(options) && slice && (ub || mcs < fs)) || options.data) {
+      if (!(this._isXHRUpload(options) && slice && (ub || ($.type(mcs) === 'function' ? mcs(options) : mcs) < fs)) || options.data) {
         return false;
       }
 
@@ -2396,12 +2324,15 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
         // Clone the options object for each chunk upload:
         var o = $.extend({}, options),
             currentLoaded = o._progress.loaded;
-        o.blob = slice.call(file, ub, ub + mcs, file.type); // Store the current chunk size, as the blob itself
+        o.blob = slice.call(file, ub, ub + ($.type(mcs) === 'function' ? mcs(o) : mcs), file.type); // Store the current chunk size, as the blob itself
         // will be dereferenced after data processing:
 
         o.chunkSize = o.blob.size; // Expose the chunk bytes position range:
 
-        o.contentRange = 'bytes ' + ub + '-' + (ub + o.chunkSize - 1) + '/' + fs; // Process the upload data (the blob and potential form data):
+        o.contentRange = 'bytes ' + ub + '-' + (ub + o.chunkSize - 1) + '/' + fs; // Trigger chunkbeforesend to allow form data to be updated for this chunk
+
+        that._trigger('chunkbeforesend', null, o); // Process the upload data (the blob and potential form data):
+
 
         that._initXHRData(o); // Add progress listeners for this chunk upload:
 
@@ -2447,6 +2378,8 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
           that._trigger('chunkalways', null, o);
 
           dfd.rejectWith(o.context, [jqXHR, textStatus, errorThrown]);
+        }).always(function () {
+          that._deinitProgressListener(o);
         });
       };
 
@@ -2552,6 +2485,8 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
         }).fail(function (jqXHR, textStatus, errorThrown) {
           that._onFail(jqXHR, textStatus, errorThrown, options);
         }).always(function (jqXHRorResult, textStatus, jqXHRorError) {
+          that._deinitProgressListener(options);
+
           that._onAlways(jqXHRorResult, textStatus, jqXHRorError, options);
 
           that._sending -= 1;
@@ -2589,9 +2524,9 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
 
           this._slots.push(slot);
 
-          pipe = slot.then(send);
+          pipe = slot[that._promisePipe](send);
         } else {
-          this._sequence = this._sequence.then(send, send);
+          this._sequence = this._sequence[that._promisePipe](send, send);
           pipe = this._sequence;
         } // Return the piped Promise object, enhanced with an abort method,
         // which is delegated to the jqXHR object of the current upload,
@@ -2715,11 +2650,11 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       // restore focus to the inputClone.
 
       if (restoreFocus) {
-        inputClone.focus();
+        inputClone.trigger('focus');
       } // Avoid memory leaks with the detached file input:
 
 
-      $.cleanData(input.unbind('remove')); // Replace the original file input element in the fileInput
+      $.cleanData(input.off('remove')); // Replace the original file input element in the fileInput
       // elements set with the clone, which has been copied including
       // event handlers:
 
@@ -2766,7 +2701,8 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
             readEntries();
           }
         }, errorHandler);
-      };
+      }; // eslint-disable-next-line no-param-reassign
+
 
       path = path || '';
 
@@ -2785,7 +2721,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
         dirReader = entry.createReader();
         readEntries();
       } else {
-        // Return an empy list for file system items
+        // Return an empty list for file system items
         // other than files or directories:
         dfd.resolve([]);
       }
@@ -2796,11 +2732,12 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       var that = this;
       return $.when.apply($, $.map(entries, function (entry) {
         return that._handleFileTreeEntry(entry, path);
-      })).then(function () {
+      }))[this._promisePipe](function () {
         return Array.prototype.concat.apply([], arguments);
       });
     },
     _getDroppedFiles: function _getDroppedFiles(dataTransfer) {
+      // eslint-disable-next-line no-param-reassign
       dataTransfer = dataTransfer || {};
       var items = dataTransfer.items;
 
@@ -2826,6 +2763,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
       return $.Deferred().resolve($.makeArray(dataTransfer.files)).promise();
     },
     _getSingleFileInputFiles: function _getSingleFileInputFiles(fileInput) {
+      // eslint-disable-next-line no-param-reassign
       fileInput = $(fileInput);
       var entries = fileInput.prop('webkitEntries') || fileInput.prop('entries'),
           files,
@@ -2865,7 +2803,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
         return this._getSingleFileInputFiles(fileInput);
       }
 
-      return $.when.apply($, $.map(fileInput, this._getSingleFileInputFiles)).then(function () {
+      return $.when.apply($, $.map(fileInput, this._getSingleFileInputFiles))[this._promisePipe](function () {
         return Array.prototype.concat.apply([], arguments);
       });
     },
@@ -3138,7 +3076,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
     }
   });
 });
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 /*
  * jQuery Iframe Transport Plugin
@@ -3151,9 +3089,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
  * https://opensource.org/licenses/MIT
  */
 
-/* global define, require, window, document, JSON */
-;
-
+/* global define, require */
 (function (factory) {
   'use strict';
 
@@ -3193,12 +3129,9 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
     if (options.async) {
       // javascript:false as initial iframe src
       // prevents warning popups on HTTPS in IE6:
-
-      /*jshint scripturl: true */
+      // eslint-disable-next-line no-script-url
       var initialIframeSrc = options.initialIframeSrc || 'javascript:false;',
-
-      /*jshint scripturl: false */
-      form,
+          form,
           iframe,
           addParamChar;
       return {
@@ -3222,10 +3155,10 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
 
 
           counter += 1;
-          iframe = $('<iframe src="' + initialIframeSrc + '" name="iframe-transport-' + counter + '"></iframe>').bind('load', function () {
+          iframe = $('<iframe src="' + initialIframeSrc + '" name="iframe-transport-' + counter + '"></iframe>').on('load', function () {
             var fileInputClones,
                 paramNames = $.isArray(options.paramName) ? options.paramName : [options.paramName];
-            iframe.unbind('load').bind('load', function () {
+            iframe.off('load').on('load', function () {
               var response; // Wrap in a try/catch block to catch exceptions thrown
               // when trying to access cross-domain iframe contents:
 
@@ -3244,7 +3177,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
 
 
               completeCallback(200, 'success', {
-                'iframe': response
+                iframe: response
               }); // Fix for IE endless progress bar activity bug
               // (happens on form submits to iframe targets):
 
@@ -3285,17 +3218,23 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
               options.fileInput.removeAttr('form');
             }
 
-            form.submit(); // Insert the file input fields at their original location
-            // by replacing the clones with the originals:
+            window.setTimeout(function () {
+              // Submitting the form in a setTimeout call fixes an issue with
+              // Safari 13 not triggering the iframe load event after resetting
+              // the load event handler, see also:
+              // https://github.com/blueimp/jQuery-File-Upload/issues/3633
+              form.submit(); // Insert the file input fields at their original location
+              // by replacing the clones with the originals:
 
-            if (fileInputClones && fileInputClones.length) {
-              options.fileInput.each(function (index, input) {
-                var clone = $(fileInputClones[index]); // Restore the original name and form properties:
+              if (fileInputClones && fileInputClones.length) {
+                options.fileInput.each(function (index, input) {
+                  var clone = $(fileInputClones[index]); // Restore the original name and form properties:
 
-                $(input).prop('name', clone.prop('name')).attr('form', clone.attr('form'));
-                clone.replaceWith(input);
-              });
-            }
+                  $(input).prop('name', clone.prop('name')).attr('form', clone.attr('form'));
+                  clone.replaceWith(input);
+                });
+              }
+            }, 0);
           });
           form.append(iframe).appendTo(document.body);
         },
@@ -3303,8 +3242,7 @@ function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterat
           if (iframe) {
             // javascript:false as iframe src aborts the request
             // and prevents warning popups on HTTPS in IE6.
-            // concat is used to avoid the "Script URL" JSLint error:
-            iframe.unbind('load').prop('src', initialIframeSrc);
+            iframe.off('load').prop('src', initialIframeSrc);
           }
 
           if (form) {
